@@ -3,7 +3,7 @@ import calendar
 import threading
 import time
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
 TOKEN = "8790900482:AAGww4359xEYm-kVOlr6Aqz95_0F9yr1PvQ"
@@ -16,7 +16,7 @@ cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS bookings (
     id INTEGER PRIMARY KEY,
-    user TEXT,
+    username TEXT,
     user_id INTEGER,
     date TEXT,
     time TEXT,
@@ -29,7 +29,7 @@ conn.commit()
 user_data = {}
 logs = []
 
-# лог
+# лог каждые 5 сек
 def log(text):
     logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {text}")
 
@@ -56,7 +56,7 @@ texts = {
         "service":"Выбери услугу",
         "time":"Выбери время",
         "done":"✅ Записано\nС вами скоро свяжется lash-мастер 💄",
-        "timeout":"❗ Если мастер не написал — напишите: https://t.me/ricowalee"
+        "timeout":"❗ Нет ответа? Напишите: https://t.me/ricowalee"
     },
     "en": {
         "menu":"💄 LashDinostry",
@@ -65,8 +65,8 @@ texts = {
         "date":"Choose date",
         "service":"Choose service",
         "time":"Choose time",
-        "done":"✅ Booked\nThe lash master will contact you soon 💄",
-        "timeout":"❗ If no reply — contact: https://t.me/ricowalee"
+        "done":"✅ Booked\nLash master will contact you 💄",
+        "timeout":"❗ No reply? Contact: https://t.me/ricowalee"
     },
     "uz": {
         "menu":"💄 LashDinostry",
@@ -75,8 +75,8 @@ texts = {
         "date":"Sana tanlang",
         "service":"Xizmat tanlang",
         "time":"Vaqt tanlang",
-        "done":"✅ Yozildingiz\nTez orada lash master siz bilan bog‘lanadi 💄",
-        "timeout":"❗ Javob bo‘lmasa yozing: https://t.me/ricowalee"
+        "done":"✅ Yozildingiz\nTez orada lash master yozadi 💄",
+        "timeout":"❗ Javob yo‘qmi? Yozing: https://t.me/ricowalee"
     }
 }
 
@@ -96,6 +96,7 @@ async def safe_user(user):
 # таймер 30 минут
 def timeout(user_id, lang):
     time.sleep(1800)
+    from telegram import Bot
     try:
         Bot(TOKEN).send_message(user_id, texts[lang]["timeout"])
         log(f"TIMEOUT {user_id}")
@@ -106,8 +107,6 @@ def timeout(user_id, lang):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     await safe_user(user)
-
-    log(f"START {user.username}")
 
     if user.username == ADMIN_USERNAME:
         kb = [[InlineKeyboardButton("📋 Заявки", callback_data="admin")]]
@@ -134,6 +133,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     log(f"CLICK {query.data}")
 
+    # язык
     if query.data == "lang":
         kb = [[
             InlineKeyboardButton("🇷🇺", callback_data="ru"),
@@ -152,6 +152,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await query.message.reply_text(texts[lang]["menu"], reply_markup=InlineKeyboardMarkup(kb))
 
+    # запись
     elif query.data == "book":
         now = datetime.now()
         days = calendar.monthrange(now.year, now.month)[1]
@@ -167,6 +168,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(texts[lang]["date"], reply_markup=InlineKeyboardMarkup(kb))
 
+    # дата
     elif query.data.startswith("d_"):
         user_data[user.id]["date"] = query.data.split("_")[1]
         lang = get_lang(user.id)
@@ -174,6 +176,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = [[InlineKeyboardButton(s, callback_data=f"s_{s}")] for s in services[lang]]
         await query.message.reply_text(texts[lang]["service"], reply_markup=InlineKeyboardMarkup(kb))
 
+    # услуга
     elif query.data.startswith("s_"):
         user_data[user.id]["service"] = query.data[2:]
         lang = get_lang(user.id)
@@ -189,6 +192,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await query.message.reply_text(texts[lang]["time"], reply_markup=InlineKeyboardMarkup(kb))
 
+    # время
     elif query.data.startswith("t_"):
         h = query.data.split("_")[1]
         data = user_data.get(user.id, {})
@@ -197,31 +201,68 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                        (user.username,user.id,data.get("date"),f"{h}:00",data.get("service"),"new"))
         conn.commit()
 
-        log(f"BOOK {user.username}")
-
         await query.message.reply_text(texts[lang]["done"])
 
         threading.Thread(target=timeout, args=(user.id, lang), daemon=True).start()
 
+    # админ список
     elif query.data == "admin":
-        cursor.execute("SELECT id,date,time,service,user FROM bookings")
+        cursor.execute("SELECT id,date,time,service,username,user_id FROM bookings")
         rows = cursor.fetchall()
 
         if not rows:
-            await query.message.reply_text("Нет заявок")
+            await query.message.reply_text("❌ Нет заявок")
             return
 
-        kb = [[InlineKeyboardButton(f"{r[1]} {r[2]}", callback_data=f"a_{r[0]}")] for r in rows]
+        kb = []
+        for r in rows:
+            kb.append([InlineKeyboardButton(f"{r[1]} {r[2]}", callback_data=f"open_{r[0]}")])
+
         await query.message.reply_text("📋 Заявки", reply_markup=InlineKeyboardMarkup(kb))
 
-# CMD
+    # открыть заявку
+    elif query.data.startswith("open_"):
+        app_id = int(query.data.split("_")[1])
+
+        cursor.execute("SELECT * FROM bookings WHERE id=?", (app_id,))
+        app = cursor.fetchone()
+
+        text = (
+            f"👤 @{app[1]}\n"
+            f"📅 {app[3]}\n"
+            f"⏰ {app[4]}\n"
+            f"💄 {app[5]}"
+        )
+
+        kb = [
+            [InlineKeyboardButton("💬 Написать", url=f"tg://user?id={app[2]}")],
+            [InlineKeyboardButton("✅ Принять", callback_data=f"accept_{app[0]}")]
+        ]
+
+        await query.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
+    # принять
+    elif query.data.startswith("accept_"):
+        app_id = int(query.data.split("_")[1])
+
+        cursor.execute("SELECT user_id FROM bookings WHERE id=?", (app_id,))
+        user_id = cursor.fetchone()[0]
+
+        await context.bot.send_message(user_id, "💄 Ваша запись подтверждена!")
+
+        cursor.execute("UPDATE bookings SET status='accepted' WHERE id=?", (app_id,))
+        conn.commit()
+
+        await query.message.reply_text("✅ Принято")
+
+# консоль команда
 def console():
     while True:
         cmd = input()
         if cmd == "/resetBooked":
             cursor.execute("DELETE FROM bookings")
             conn.commit()
-            print("🧹 Заявки очищены")
+            print("🧹 Все заявки очищены")
 
 threading.Thread(target=console, daemon=True).start()
 
